@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: checkout
+  template:
+    metadata:
+      labels:
+        app: checkout
+    spec:
+      containers:
+        - name: checkout
+          image: 622047409214.dkr.ecr.us-east-1.amazonaws.com/ecommerce-app/checkout:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: production
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: checkout
+  ports:
+    - port: 3000
+      targetPort: 3000
