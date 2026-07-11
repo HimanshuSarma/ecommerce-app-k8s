@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ui
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ui
+  template:
+    metadata:
+      labels:
+        app: ui
+    spec:
+      containers:
+      - name: ui
+        image: 622047409214.dkr.ecr.us-east-1.amazonaws.com/ecommerce-app/ui:v1
+---
+# apiVersion: monitoring.coreos.com/v1
+# kind: ServiceMonitor
+# metadata:
+#   name: service2-monitor
+#   namespace: default          # Keep it in the same namespace as your app
+#   labels:
+#     # CRITICAL: This label MUST match the release name of your prometheus stack
+#     release: monitoring-stack
+# spec:
+#   selector:
+#     matchLabels:
+#       app: service2
+#   endpoints:
+#   - port: http                
+#     path: /metrics            
+#     interval: 10s     
+# ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ui-svc
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: ui
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
