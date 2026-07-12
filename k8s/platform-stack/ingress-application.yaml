@@ -1,26 +1,26 @@
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: ingress-application
-  namespace: argocd
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-spec:
-  project: default
-  # Use 'sources' (plural) to combine Helm repo and your Git repo
-  source:
-    repoURL: https://github.com/HimanshuSarma/ecommerce-app-k8s.git
-    targetRevision: HEAD
-    ref: values
-    path: k8s/platform-stack/ingress
+# apiVersion: argoproj.io/v1alpha1
+# kind: Application
+# metadata:
+#   name: ingress-application
+#   namespace: argocd
+#   finalizers:
+#     - resources-finalizer.argocd.argoproj.io
+# spec:
+#   project: default
+#   # Use 'sources' (plural) to combine Helm repo and your Git repo
+#   source:
+#     repoURL: https://github.com/HimanshuSarma/ecommerce-app-k8s.git
+#     targetRevision: HEAD
+#     ref: values
+#     path: k8s/platform-stack/ingress
       
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: default
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
+#   destination:
+#     server: https://kubernetes.default.svc
+#     namespace: default
+#   syncPolicy:
+#     automated:
+#       prune: true
+#       selfHeal: true
+#     syncOptions:
+#       - CreateNamespace=true
+#       - ServerSideApply=true
