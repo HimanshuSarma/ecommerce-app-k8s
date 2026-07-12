@@ -17,6 +17,8 @@ spec:
             nodePorts:
               http: 31897
               https: 32006
+          admissionWebhooks:
+            enabled: false
   destination:
     server: https://kubernetes.default.svc
     namespace: ingress-nginx
