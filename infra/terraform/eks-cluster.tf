@@ -34,6 +34,11 @@ module "eks" {
   }
 }
 
+resource "aws_iam_role_policy_attachment" "node_elb" {
+  policy_arn = "arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess"
+  role       = module.eks.module.self_managed_node_group["general_nodes"].aws_iam_role.this[0].name
+}
+
 # ==========================================
 # CALICO PRE-DESTROY
 # ==========================================
