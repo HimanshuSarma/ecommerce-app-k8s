@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: edge-alb-ingress
+  namespace: ingress-nginx # Deploy in the same namespace as your NGINX controller
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    # Force the ALB to target EC2 NodePorts rather than direct Pod IPs
+    alb.ingress.kubernetes.io/target-type: instance 
+    # Match the default health check endpoint exposed by NGINX
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+spec:
+  ingressClassName: alb # Triggers the AWS Load Balancer Controller
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-ingress-ingress-nginx-controller
+            port:
+              number: 80 # ALB maps port 80 to NGINX's assigned HTTP NodePort (e.g., 31655)

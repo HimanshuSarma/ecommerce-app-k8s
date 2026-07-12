@@ -43,10 +43,14 @@ module "vpc" {
   # Additional Tags to Subnets
   public_subnet_tags = {
     Type = "Public Subnets"
+    "kubernetes.io/role/elb"                          = "1"  # internet-facing ALB
+    "kubernetes.io/cluster/${var.project_name}-cluster" = "owned"
   }
 
   private_subnet_tags = {
     Type = "private-subnets"  
+    "kubernetes.io/role/internal-elb"                 = "1"  # internal ALB
+    "kubernetes.io/cluster/${var.project_name}-cluster" = "owned"
   }
 
   database_subnet_tags = {
