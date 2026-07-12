@@ -36,7 +36,42 @@ module "eks" {
 
 resource "aws_iam_role_policy_attachment" "node_elb" {
   policy_arn = "arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess"
-  role       = module.eks.module.self_managed_node_group["general_nodes"].aws_iam_role.this[0].name
+  role       = module.eks.self_managed_node_groups["general_nodes"].iam_role_name
+}
+
+# IRSA role for AWS Load Balancer Controller
+resource "aws_iam_role" "albc" {
+  name = "aws-load-balancer-controller"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = module.eks.oidc_provider_arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${module.eks.oidc_provider}:sub" = "system:serviceaccount:kube-system:aws-load-balancer-controller"
+            "${module.eks.oidc_provider}:aud" = "sts.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_policy" "albc" {
+  name   = "AWSLoadBalancerControllerIAMPolicy"
+  policy = file("${path.module}/albc-iam-policy.json")
+}
+
+resource "aws_iam_role_policy_attachment" "albc" {
+  policy_arn = aws_iam_policy.albc.arn
+  role       = aws_iam_role.albc.name
+  depends_on = [aws_iam_role.albc]
 }
 
 # ==========================================
