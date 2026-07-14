@@ -15,6 +15,19 @@ module "eks" {
 
   addons = {
     kube-proxy = {}
+    vpc-cni = {
+      # CRITICAL for self-managed groups: initialises network before nodes boot
+      before_compute    = true
+      most_recent       = true
+      
+      # Optional optimization configurations can go inside configuration_values
+      configuration_values = jsonencode({
+        env = {
+          # Recommended configuration: Warms up IP addresses for quicker pod spin-ups
+          WARM_IP_TARGET = "5" 
+        }
+      })
+    }
   }
 
   self_managed_node_groups = {
@@ -34,9 +47,44 @@ module "eks" {
   }
 }
 
+# ==========================================
+# COMPLETELY OPEN SECURITY GROUP RULES FOR WORKER NODES
+# ==========================================
+
+# 1. Allow all Inbound TCP Traffic from anywhere
+resource "aws_security_group_rule" "nodes_allow_all_tcp" {
+  type              = "ingress"
+  from_port         = 0
+  to_port           = 65535
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = module.eks.node_security_group_id
+}
+
+# 2. Allow all Inbound UDP Traffic from anywhere
+resource "aws_security_group_rule" "nodes_allow_all_udp" {
+  type              = "ingress"
+  from_port         = 0
+  to_port           = 65535
+  protocol          = "udp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = module.eks.node_security_group_id
+}
+
+# 3. Allow all Inbound ICMP (Ping/Diagnostics) from anywhere
+resource "aws_security_group_rule" "nodes_allow_all_icmp" {
+  type              = "ingress"
+  from_port         = -1
+  to_port           = -1
+  protocol          = "icmp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = module.eks.node_security_group_id
+}
+
 resource "aws_iam_role_policy_attachment" "node_elb" {
   policy_arn = "arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess"
   role       = module.eks.self_managed_node_groups["general_nodes"].iam_role_name
+  depends_on = [module.eks]
 }
 
 # IRSA role for AWS Load Balancer Controller
@@ -75,88 +123,12 @@ resource "aws_iam_role_policy_attachment" "albc" {
 }
 
 # ==========================================
-# CALICO PRE-DESTROY
-# ==========================================
-resource "null_resource" "calico_pre_destroy" {
-  triggers = {
-    calico_release_id = helm_release.calico.id
-  }
-
-  provisioner "local-exec" {
-    when    = destroy
-    command = <<-EOT
-      echo "=== Phase 1: Graceful cleanup ==="
-      kubectl delete installation.operator.tigera.io default \
-        --wait=true --timeout=90s --ignore-not-found=true 2>/dev/null \
-      && echo "=== Operator cleaned up gracefully ===" \
-      || echo "=== Timed out, falling through to Phase 2 ==="
-
-      echo "=== Phase 2: Force-clear any remaining finalizers ==="
-
-      kubectl patch installation.operator.tigera.io default \
-        --type=json \
-        -p='[{"op":"remove","path":"/metadata/finalizers"}]' \
-        2>/dev/null || true
-
-      kubectl get pods -n calico-system -o json 2>/dev/null \
-        | jq -r '.items[] | select(.metadata.finalizers != null) | .metadata.name' \
-        | while read name; do
-            kubectl patch pod "$name" -n calico-system \
-              --type=json \
-              -p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true
-          done
-
-      kubectl get pods -n tigera-operator -o json 2>/dev/null \
-        | jq -r '.items[] | select(.metadata.finalizers != null) | .metadata.name' \
-        | while read name; do
-            kubectl patch pod "$name" -n tigera-operator \
-              --type=json \
-              -p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true
-          done
-
-      echo "=== Pre-destroy cleanup complete ==="
-    EOT
-  }
-
-  depends_on = [helm_release.calico]
-}
-
-# ==========================================
-# CALICO VIA HELM
-# ==========================================
-resource "helm_release" "calico" {
-  name             = "calico"
-  repository       = "https://docs.tigera.io/calico/charts"
-  chart            = "tigera-operator"
-  namespace        = "tigera-operator"
-  create_namespace = true
-  disable_openapi_validation = true
-  version          = "v3.28.0"
-
-  values = [
-    <<-EOT
-    installation:
-      kubernetesProvider: EKS
-      cni:
-        type: Calico
-      calicoNetwork:
-        bgp: Disabled
-        ipPools:
-          - cidr: ${var.calico_cni_cidr}
-            encapsulation: VXLAN
-    EOT
-  ]
-
-  depends_on = [module.eks]
-}
-
-# ==========================================
 # COREDNS
 # ==========================================
 resource "aws_eks_addon" "coredns" {
   cluster_name = module.eks.cluster_name
   addon_name   = "coredns"
-  depends_on   = [helm_release.calico]
+  depends_on   = [module.eks]
 }
 
 # ==========================================
@@ -169,5 +141,266 @@ resource "helm_release" "argocd" {
   namespace        = "argocd"
   create_namespace = true
   version          = "7.3.11"
-  depends_on       = [helm_release.calico]
+  depends_on       = [module.eks, aws_eks_addon.coredns]
+
+  # Pass configuration as a clean YAML block instead of a 'set' block
+  values = [
+    <<-EOT
+    configs:
+      params:
+        server.insecure: "true"
+    EOT
+  ]
+}
+
+resource "kubernetes_manifest" "argocd_aws_load_balancer_controller" {
+  manifest = {
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+
+    metadata = {
+      name       = "aws-load-balancer-controller"
+      namespace  = "argocd"
+      finalizers = [
+        "resources-finalizer.argocd.argoproj.io"
+      ]
+    }
+
+    spec = {
+      project = "default"
+
+      source = {
+        repoURL        = "https://aws.github.io/eks-charts"
+        chart          = "aws-load-balancer-controller"
+        targetRevision = "1.8.1"
+
+        helm = {
+          # Multi-line YAML string leveraging dynamic Terraform interpolation strings
+          values = <<-EOT
+            clusterName: ${module.eks.cluster_name}
+            serviceAccount:
+              create: true
+              name: aws-load-balancer-controller
+              annotations:
+                eks.amazonaws.com/role-arn: ${aws_iam_role.albc.arn}
+            region: us-east-1
+            vpcId: ${module.vpc.vpc_id}
+            enableCertManager: false
+            enableServiceMutatorWebhook: false
+            backendSecurityGroup: ""
+          EOT
+        }
+      }
+
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = "kube-system"
+      }
+
+      syncPolicy = {
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
+        syncOptions = [
+          "CreateNamespace=true"
+        ]
+      }
+    }
+  }
+
+  depends_on = [module.eks, helm_release.argocd]
+}
+
+resource "kubernetes_manifest" "argocd_nginx_ingress_application" {
+  manifest = {
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    
+    metadata = {
+      name      = "nginx-ingress"
+      namespace = "argocd"
+      finalizers = [
+        "resources-finalizer.argocd.argoproj.io"
+      ]
+    }
+
+    spec = {
+      project = "default"
+      
+      source = {
+        repoURL        = "https://kubernetes.github.io/ingress-nginx"
+        chart          = "ingress-nginx"
+        targetRevision = "4.10.1"
+        
+        helm = {
+          # Using YAML multi-line string notation inside HCL to match your original values exactly
+          values = <<-EOT
+            controller:
+              service:
+                type: NodePort
+              admissionWebhooks:
+                enabled: false
+          EOT
+        }
+      }
+
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = "ingress-nginx"
+      }
+
+      syncPolicy = {
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
+        syncOptions = [
+          "CreateNamespace=true"
+        ]
+      }
+    }
+  }
+
+  depends_on = [kubernetes_manifest.argocd_aws_load_balancer_controller]
+}
+
+resource "kubernetes_ingress_v1" "edge_alb_ingress" {
+  metadata {
+    name      = "edge-alb-ingress"
+    namespace = "ingress-nginx"
+
+    annotations = {
+      "alb.ingress.kubernetes.io/scheme"           = "internet-facing"
+      # Force the ALB to target EC2 NodePorts rather than direct Pod IPs
+      "alb.ingress.kubernetes.io/target-type"      = "instance"
+      # Match the default health check endpoint exposed by NGINX
+      "alb.ingress.kubernetes.io/healthcheck-path" = "/healthz"
+    }
+  }
+
+  spec {
+    ingress_class_name = "alb" # Triggers the AWS Load Balancer Controller
+
+    rule {
+      http {
+        path {
+          path      = "/"
+          path_type = "Prefix"
+
+          backend {
+            service {
+              name = "nginx-ingress-ingress-nginx-controller"
+
+              port {
+                number = 80 # ALB maps port 80 to NGINX's assigned HTTP NodePort
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [kubernetes_manifest.argocd_nginx_ingress_application]
+}
+
+resource "kubernetes_ingress_v1" "ecommerce_app_ingress_argocd_ns" {
+  metadata {
+    name      = "ecommerce-app-ingress-argocd-ns"
+    namespace = "argocd"
+
+    annotations = {
+      "nginx.ingress.kubernetes.io/ssl-redirect"       = "false"
+      "nginx.ingress.kubernetes.io/force-ssl-redirect" = "false"
+      # Securely routes traffic using TLS to the backend Argo pods
+      "nginx.ingress.kubernetes.io/backend-protocol"   = "HTTP"
+    }
+  }
+
+  spec {
+    ingress_class_name = "nginx"
+
+    rule {
+      host = "ecommerce-app-argocd-himanshu1234.duckdns.org"
+
+      http {
+        path {
+          path      = "/"
+          path_type = "Prefix"
+
+          backend {
+            service {
+              name = "argocd-server"
+
+              port {
+                number = 80
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [module.eks, helm_release.argocd, kubernetes_manifest.argocd_aws_load_balancer_controller, 
+    kubernetes_manifest.argocd_nginx_ingress_application
+  ]
+}
+
+
+# ==========================================
+# ARGOCD SERVER NODEPORT SERVICE
+# ==========================================
+resource "kubernetes_service_v1" "argocd_server_nodeport" {
+  metadata {
+    name      = "argocd-server-nodeport"
+    namespace = "argocd"
+  }
+
+  spec {
+    type = "NodePort"
+
+    selector = {
+      "app.kubernetes.io/name" = "argocd-server"
+    }
+
+    port {
+      name        = "http"
+      port        = 80
+      target_port = 8080
+      node_port   = 30080
+    }
+
+    port {
+      name        = "https"
+      port        = 443
+      target_port = 8080
+      node_port   = 30443
+    }
+  }
+}
+
+# ==========================================
+# ARGOCD SERVER CLUSTERIP SERVICE
+# ==========================================
+resource "kubernetes_service_v1" "argocd_server_clusterip" {
+  metadata {
+    name      = "argocd-server-clusterip"
+    namespace = "argocd"
+  }
+
+  spec {
+    type = "ClusterIP"
+
+    selector = {
+      "app.kubernetes.io/name" = "argocd-server"
+    }
+
+    port {
+      name        = "http"
+      port        = 8080
+      target_port = 8080
+    }
+  }
 }

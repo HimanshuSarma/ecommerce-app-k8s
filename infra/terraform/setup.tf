@@ -19,6 +19,17 @@ provider "aws" {
   region = var.aws_region
 }
 
+# 1. Fetch authentication tokens from AWS dynamically
+data "aws_eks_cluster_auth" "cluster" {
+  name = module.eks.cluster_name
+}
+
+provider "kubernetes" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+  token                  = data.aws_eks_cluster_auth.cluster.token
+}
+
 provider "helm" {
   # Helm v3 requires the equals sign here because 'kubernetes' is now a map attribute!
   kubernetes = {

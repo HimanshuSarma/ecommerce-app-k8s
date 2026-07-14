@@ -1,22 +1,24 @@
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: ecommerce-app-ingress-argocd-ns
-  namespace: argocd
-  annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
-spec:
-  ingressClassName: nginx
-  rules:
-  - host: ecommerce-app-argocd-himanshu1234.duckdns.org
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: argocd-server-clusterip
-            # name: k8s-automation-svc
-            port:
-              number: 8080
+# # This is in terraform now
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: ecommerce-app-ingress-argocd-ns
+#   namespace: argocd
+#   annotations:
+#     nginx.ingress.kubernetes.io/ssl-redirect: "false"
+#     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+#     nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+# spec:
+#   ingressClassName: nginx
+#   rules:
+#   - host: ecommerce-app-argocd-himanshu1234.duckdns.org
+#     http:
+#       paths:
+#       - path: /
+#         pathType: Prefix
+#         backend:
+#           service:
+#             name: argocd-server
+#             # name: k8s-automation-svc
+#             port:
+#               number: 443
